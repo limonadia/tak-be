@@ -1,7 +1,6 @@
 package models
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -23,8 +22,9 @@ type Message struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-const Type (
-	DIRECT string = 'direct'
-	EVENT string = 'event'
-	GROUP string = 'group'
+type Type string 
+const (
+	DIRECT Type = "direct"
+	EVENT Type = "event"
+	GROUP Type = "group"
 )

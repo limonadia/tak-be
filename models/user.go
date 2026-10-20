@@ -1,13 +1,13 @@
 package models
 
 import (
-	"encoding/json"
 	"time"
 )
 
 type User struct {
 	ID int `json:"id"`
 	Email string  `json:"email"`
+	PasswordHash string `json:"password_hash"`
 	FirstName string `json:"first_name"`
 	LastName string `json:"last_name"`
 	City string `json:"city"`
@@ -20,12 +20,14 @@ type User struct {
 	StrikesCount int `json:"strikes_count"`
 }
 
-const Language (
-	EN string = 'en'
-	AL string = 'al'
+type Language string
+const (
+	EN Language = "en"
+	AL Language = "al"
 )
 
-const Theme (
-	DARK string = 'dark'
-	LIGHT string = 'light'
+type Theme string
+const (
+	DARK Theme = "dark"
+	LIGHT Theme = "light"
 )

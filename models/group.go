@@ -1,7 +1,6 @@
 package models
 
 import(
-	"encoding/json"
 	"time"
 )
 
@@ -13,12 +12,13 @@ type Group struct {
 	Description string `json:"description"`
 	ImageUrl string `json:"image_url"`
 	City string `json:"city"`
-	Status Status `json:"status"`
+	Status GroupStatus `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-const Status (
-	ACTIVE string = 'active'
-	ARCHIVED string = 'archived'
+type GroupStatus string
+const (
+	ACTIVE GroupStatus = "active"
+	ARCHIVED GroupStatus = "archived"
 )

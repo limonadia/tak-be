@@ -8,6 +8,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
+var DB *sql.DB
+
 func Connect() (*sql.DB, error) {
 	err := godotenv.Load()
 	if err != nil {
@@ -38,5 +40,6 @@ func Connect() (*sql.DB, error) {
 		return nil, err
 	}
 
+	DB = db
 	return db, nil
 }

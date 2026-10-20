@@ -1,7 +1,6 @@
 package models
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -14,8 +13,9 @@ type Connection struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-const Status (
-	PENDING string = 'pending'
-	ACCEPTED string = 'accepted'
-	REJECTED string = 'rejected'
+type Status string
+const (
+	PENDING Status = "pending"
+	ACCEPTED Status = "accepted"
+	REJECTED Status = "rejected"
 )

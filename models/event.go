@@ -1,7 +1,6 @@
 package models 
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -24,13 +23,14 @@ type Event struct {
 	MaxParticipants int `json:"max_participants"`
 	PriceAmount float64 `json:"price_amount"`
 	Currency string `json:"currency"`
-	Status Status `json:"status"`
+	Status EventStatus `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-const Status (
-	DRAFT string = 'draft'
-	PUBLISHED string = 'published'
-	CANCELLED string = 'cancelled'
+type EventStatus string
+const (
+	DRAFT EventStatus = "draft"
+	PUBLISHED EventStatus = "published"
+	CANCELLED EventStatus = "cancelled"
 )
