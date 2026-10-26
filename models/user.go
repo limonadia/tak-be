@@ -18,6 +18,7 @@ type User struct {
 	Theme Theme `json:"theme"`
 	CreatedAt time.Time `json:"created_at"`
 	StrikesCount int `json:"strikes_count"`
+	Preferences []uint64 `json:"preferences"`
 }
 
 type Language string

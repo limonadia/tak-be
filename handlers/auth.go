@@ -14,6 +14,9 @@ import (
 	"io"
 	"database/sql"
 	"fmt"
+	"github.com/google/uuid"
+	"path/filepath"
+	"os"
 )
 
 var jwtKey = []byte("password_hash")
@@ -24,15 +27,15 @@ type Claims struct {
 }
 
 func Signup(w http.ResponseWriter, r *http.Request){
+	r.Body = http.MaxBytesReader(w, r.Body, 6<<20)
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Could not read request body", http.StatusBadRequest)
+	if err := r.ParseMultipartForm(6<<20); err != nil {
+		http.Error(w, "Invalid multipart request", http.StatusBadRequest)
 		return
 	}
 
 	var user models.User
-	if err := json.Unmarshal(body, &user); err != nil {
+	if err := json.Unmarshal([]byte(r.FormValue("user")), &user); err != nil {
 		log.Printf("Signup JSON decoding error: %v", err)
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
@@ -44,9 +47,9 @@ func Signup(w http.ResponseWriter, r *http.Request){
 	}
 
 	var exists int
-	err = database.DB.QueryRow("SELECT COUNT(*) FROM users WHERE email=?", user.Email).Scan(&exists)
+	err := database.DB.QueryRow("SELECT COUNT(*) FROM users WHERE email=?", user.Email).Scan(&exists)
 	if err != nil {
-		http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Database error:" +err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if exists > 0 {
@@ -66,24 +69,130 @@ func Signup(w http.ResponseWriter, r *http.Request){
 		return
 	}
 
+	profilePath, err := saveProfilePicture(r)
+	if err != nil {
+		http.Error(w, "Invalid profile picture", http.StatusBadRequest)
+		return
+	}
+
+	user.ProfilePicture = profilePath
 	user.Language = models.EN
 	user.Theme = models.DARK
 	user.StrikesCount = 0
+
+	tx, err := database.DB.Begin()
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
 	res, err := database.DB.Exec(
 		"INSERT INTO users (email, password_hash, first_name, last_name, city, birthday, profile_picture, description, language, theme, strikes_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		user.Email, string(hashed), user.FirstName, user.LastName, user.City, user.Birthday, user.ProfilePicture, user.Description, user.Language, user.Theme, user.StrikesCount, 
+		user.Email, string(hashed), user.FirstName, user.LastName, user.City, user.Birthday, user.ProfilePicture, user.Description, user.Language, user.Theme, user.StrikesCount,
 	)
 	if err != nil {
 		http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	id, _ := res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		http.Error(w, "Could not retrieve userID", http.StatusInternalServerError)
+		return
+	}
+
 	user.ID = int(id)
+
+	for _, interestID := range user.Preferences {
+		_, err := tx.Exec(
+			`INSERT INTO user_interests (user_id, interest_id) VALUES (?, ?)`, id, interestID,
+		)
+		if err != nil {
+			log.Printf("Failed to insert interest %d for user %d: %v", interestID, id, err)
+			http.Error(w, "Could not save user interests", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "Could not complete signup", http.StatusInternalServerError)
+		return
+	}
+
 	user.PasswordHash = ""
 	log.Printf("Signup inserted user ID=%d, email=%s", id, user.Email)
+
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(user)
+}
+
+func saveProfilePicture(r *http.Request) (string, error) {
+    file, header, err := r.FormFile("profile_picture")
+    if err != nil {
+        if err == http.ErrMissingFile {
+            return "", nil 
+        }
+        return "", err
+    }
+    defer file.Close()
+
+    if header.Size > 5<<20 {
+        return "", fmt.Errorf("image exceeds 5 MB")
+    }
+
+    buffer := make([]byte, 512)
+    n, err := file.Read(buffer)
+    if err != nil && err != io.EOF {
+        return "", err
+    }
+
+    contentType := http.DetectContentType(buffer[:n])
+
+    extensions := map[string]string{
+        "image/jpeg": ".jpg",
+        "image/png":  ".png",
+        "image/webp": ".webp",
+    }
+
+    ext, ok := extensions[contentType]
+    if !ok {
+        return "", fmt.Errorf("unsupported image format")
+    }
+
+    filename := uuid.NewString() + ext
+    relativePath := filepath.ToSlash(filepath.Join("uploads", "profiles", filename))
+    fullPath := filepath.Join("uploads", "profiles", filename)
+
+    if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+        return "", err
+    }
+
+    dst, err := os.Create(fullPath)
+    if err != nil {
+        return "", err
+    }
+
+    if _, err := file.Seek(0, io.SeekStart); err != nil {
+        dst.Close()
+        os.Remove(fullPath)
+        return "", err
+    }
+
+    _, copyErr := io.Copy(dst, file)
+    closeErr := dst.Close()
+
+    if copyErr != nil {
+        os.Remove(fullPath)
+        return "", copyErr
+    }
+    if closeErr != nil {
+        os.Remove(fullPath)
+        return "", closeErr
+    }
+
+    return relativePath, nil
 }
 
 func Login(w http.ResponseWriter, r *http.Request) {
@@ -184,10 +293,10 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	var user models.User
 	err := database.DB.QueryRow(`
-		SELECT id, email, first_name, last_name, city, birthday, profile_picture, description, theme, language
+		SELECT id, email, first_name, last_name, city, birthday, profile_picture, description
 		FROM users WHERE id = ?
 	`, userID).Scan(
-		&user.ID, &user.Email, &user.FirstName, &user.LastName, &user.City, &user.Birthday, &user.ProfilePicture, &user.Description
+		&user.ID, &user.Email, &user.FirstName, &user.LastName, &user.City, &user.Birthday, &user.ProfilePicture, &user.Description,
 	)
 
 	if err != nil {

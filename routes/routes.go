@@ -11,8 +11,10 @@ func RegisterRoutes(r *mux.Router) {
 	
 	api.HandleFunc("/signup", handlers.Signup).Methods("POST")
 	api.HandleFunc("/login", handlers.Login).Methods("POST")
+	api.HandleFunc("/interests", handlers.GetIntersts).Methods("GET")
 
-	api.Handle("/getTheme", handlers.AuthMiddleWare(http.HandlerFunc(handlers.GetTheme))).Methods("GET")
-	api.Handle("/getLanguage", handlers.AuthMiddleWare(http.HandlerFunc(handlers.GetLanguage))).Methods("GET")
-	api.Handle("/getProfile", handlers.AuthMiddleWare(http.HandlerFunc(handlers.GetProfile))).Methods("GET")
+	api.Handle("/theme", handlers.AuthMiddleWare(http.HandlerFunc(handlers.GetTheme))).Methods("GET")
+	api.Handle("/language", handlers.AuthMiddleWare(http.HandlerFunc(handlers.GetLanguage))).Methods("GET")
+	api.Handle("/profile", handlers.AuthMiddleWare(http.HandlerFunc(handlers.GetProfile))).Methods("GET")
+	
 }
