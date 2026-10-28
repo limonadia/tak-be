@@ -8,7 +8,7 @@ import (
 	"log"
 )
 
-func GetIntersts(w http.ResponseWriter, r *http.Request) {
+func GetInterests(w http.ResponseWriter, r *http.Request) {
 	if database.DB == nil {
 		http.Error(w, "database unavailable", http.StatusInternalServerError)
 		return

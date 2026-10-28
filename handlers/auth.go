@@ -12,11 +12,13 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 	"io"
-	"database/sql"
 	"fmt"
 	"github.com/google/uuid"
 	"path/filepath"
 	"os"
+	"encoding/hex"
+	"math/rand"
+	"net/smtp"
 )
 
 var jwtKey = []byte("password_hash")
@@ -284,79 +286,158 @@ func GetUserID(ctx context.Context) (int, bool) {
 	return id, ok
 }
 
-func GetProfile(w http.ResponseWriter, r *http.Request) {
-	userID, ok := GetUserID(r.Context())
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+func ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token string `json:"token"`
+		NewPassword string `json:"newPassword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" || body.NewPassword == "" {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
-	var user models.User
-	err := database.DB.QueryRow(`
-		SELECT id, email, first_name, last_name, city, birthday, profile_picture, description
-		FROM users WHERE id = ?
-	`, userID).Scan(
-		&user.ID, &user.Email, &user.FirstName, &user.LastName, &user.City, &user.Birthday, &user.ProfilePicture, &user.Description,
+	var userID int 
+	var expiry time.Time
+	err := database.DB.QueryRow("SELECT id, reset_token_expiry FROM users WHERE reset_token=?", body.Token).Scan(&userID, &expiry)
+	if err != nil {
+		http.Error(w, "Token expired", http.StatusBadRequest)
+		return
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(body.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Error hashing password", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = database.DB.Exec("UPDATE users SET password=?, reset_token=NULL, reset_token_expiry=NULL WHERE id =?", string(hashed), userID)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Password reset successful.",
+	})
+}
+
+func generateRandomToken(length int) string {
+	bytes := make([]byte, length)
+	if _, err := rand.Read(bytes); err != nil {
+		log.Println("Error generating random token: ", err)
+		return ""
+	}
+	return hex.EncodeToString(bytes)
+}
+
+func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var req ForgotPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	var userID int
+	err := database.DB.QueryRow("SELECT id FROM users WHERE email = ?", req.Email).Scan(&userID)
+	if err != nil {
+		http.Error(w, "Email not found", http.StatusNotFound)
+		return
+	}
+
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		http.Error(w, "Error generating token", http.StatusInternalServerError)
+		return
+	}
+	resetToken := hex.EncodeToString(tokenBytes)
+
+	_, err = database.DB.Exec(
+		"UPDATE users SET reset_token = ?, reset_token_expiry = ? WHERE id = ?",
+		resetToken, time.Now().Add(1*time.Hour), userID,
 	)
-
 	if err != nil {
-		if err == sql.ErrNoRows {
-			http.Error(w, "User not found", http.StatusNotFound)
-		} else {
-			log.Println("Database error:", err)
-			http.Error(w, "Database error", http.StatusInternalServerError)
-		}
+		http.Error(w, "Failed to store reset token", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
+
+	resetLink := "https://localhost:8100/reset-password?token=" + resetToken
+	fmt.Println("Password reset link: ", resetLink)
+	from := os.Getenv("SMTP_EMAIL")
+	password := os.Getenv("SMTP_PASS")
+	to := req.Email
+	subject := "Password Reset Request"
+	body := fmt.Sprintf("You requested to reset your password. \n\nClick the link below: \n%s\n\nThis link will expire in 1 hour.", resetLink)
+	message := []byte("Subject: " + subject + "\r\n" +
+	"From: " + from + "\r\n" +
+	"To: " + to + "\r\n\r\n" +
+	body)
+	smtpHost := "smtp.gmail.com"
+	smtpPort := "587"
+	auth := smtp.PlainAuth("", from, password, smtpHost)
+
+	if err := smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{to}, message); err != nil {
+		fmt.Println("Email error:", err)
+		http.Error(w, "Failed to send email", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Password reset link sent successfully"})
 }
 
-func GetTheme(w http.ResponseWriter, r *http.Request) {
+func DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	userID, ok := GetUserID(r.Context())
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	var theme models.Theme
-	err := database.DB.QueryRow(`
-		SELECT theme FROM users WHERE id = ?`, userID).Scan(&theme)
-
+	tx, err := database.DB.Begin()
 	if err != nil {
-		if err == sql.ErrNoRows {
-			http.Error(w, "User not found", http.StatusNotFound)
-			return
-		}
-		log.Printf("Failed to retrieve user theme: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		log.Println("Failed to start transaction: ", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`DELETE FROM user_interests WHERE user_id = ?`, userID)
+	if err != nil {
+		log.Println("Failed to delete user interests: ", err)
+		http.Error(w, "Failed to delete account", http.StatusInternalServerError)
+		return
+	}
+
+	result, err := tx.Exec(`DELETE FROM users WHERE id = ?`, userID)
+	if err != nil {
+		log.Println("Failed to delete user:", err)
+		http.Error(w, "Failed to delete account", http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Println("Failed to check deleted account", http.StatusInternalServerError)
+		http.Error(w, "Failed to delete account", http.StatusInternalServerError)
+		return
+	}
+
+	if rowsAffected == 0 {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Println("Failed to commit deletion:", err)
+		http.Error(w, "Failed to delete account", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(theme)
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{ "message": "Account deleted successfully" })
 }
 
-func GetLanguage(w http.ResponseWriter, r *http.Request) {
-	userID, ok := GetUserID(r.Context())
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	var language models.Language
-	err := database.DB.QueryRow(`
-		SELECT language FROM users WHERE id = ?`, userID).Scan(&language)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			http.Error(w, "User not found", http.StatusNotFound)
-			return
-		}
-		log.Printf("Failed to retrieve user language %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("content-Type", "application/json")
-	json.NewEncoder(w).Encode(language)
+type ForgotPasswordRequest struct {
+	Email string `json:"email"`
 }

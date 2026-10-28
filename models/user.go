@@ -19,6 +19,8 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	StrikesCount int `json:"strikes_count"`
 	Preferences []uint64 `json:"preferences"`
+	ResetToken string `json:"-"`
+	ResetTokenExpiry time.Time `json:"-"`
 }
 
 type Language string
