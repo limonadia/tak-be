@@ -7,6 +7,14 @@ import (
 )
 
 func RegisterRoutes(r *mux.Router) {
+
+	r.PathPrefix("/uploads/").Handler(
+        http.StripPrefix(
+            "/uploads/",
+            http.FileServer(http.Dir("./uploads")),
+        ),
+    )
+
 	api := r.PathPrefix("/api/v1").Subrouter()
 	
 	api.HandleFunc("/signup", handlers.Signup).Methods("POST")

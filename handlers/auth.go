@@ -21,10 +21,10 @@ import (
 	"net/smtp"
 )
 
-var jwtKey = []byte("password_hash")
+var jwtKey = []byte("password")
 
 type Claims struct {
-	UserID int `json:"user_id"`
+	UserID int `json:"id"`
 	jwt.RegisteredClaims
 }
 
@@ -131,7 +131,7 @@ func Signup(w http.ResponseWriter, r *http.Request){
 }
 
 func saveProfilePicture(r *http.Request) (string, error) {
-    file, header, err := r.FormFile("profile_picture")
+    file, header, err := r.FormFile("profilePicture")
     if err != nil {
         if err == http.ErrMissingFile {
             return "", nil 
@@ -200,7 +200,7 @@ func saveProfilePicture(r *http.Request) (string, error) {
 func Login(w http.ResponseWriter, r *http.Request) {
 	var creds struct {
 		Email string `json:"email"`
-		PasswordHash string `json:"password_hash"`
+		PasswordHash string `json:"password"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {

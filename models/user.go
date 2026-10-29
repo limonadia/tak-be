@@ -7,17 +7,17 @@ import (
 type User struct {
 	ID int `json:"id"`
 	Email string  `json:"email"`
-	PasswordHash string `json:"password_hash"`
-	FirstName string `json:"first_name"`
-	LastName string `json:"last_name"`
+	PasswordHash string `json:"password"`
+	FirstName string `json:"firstname"`
+	LastName string `json:"lastname"`
 	City string `json:"city"`
 	Birthday time.Time `json:"birthday"`
-	ProfilePicture string `json:"profile_picture"`
+	ProfilePicture string `json:"profilePicture"`
 	Description string `json:"description"`
 	Language Language `json:"language"`
 	Theme Theme `json:"theme"`
-	CreatedAt time.Time `json:"created_at"`
-	StrikesCount int `json:"strikes_count"`
+	CreatedAt time.Time `json:"createdAt"`
+	StrikesCount int `json:"strikesCount"`
 	Preferences []uint64 `json:"preferences"`
 	ResetToken string `json:"-"`
 	ResetTokenExpiry time.Time `json:"-"`

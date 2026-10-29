@@ -68,11 +68,11 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 
 	allowedFields := map[string]string{
 		"email":           "email",
-		"first_name":      "first_name",
-		"last_name":       "last_name",
+		"firstname":      "firstname",
+		"lastname":       "lastname",
 		"city":            "city",
 		"birthday":        "birthday",
-		"profile_picture": "profile_picture",
+		"profilePicture": "profilePicture",
 		"description":     "description",
 		"language":        "language",
 		"theme":           "theme",
