@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"database/sql"
 	"strings"
+	"os"
 )
 
 func GetProfile(w http.ResponseWriter, r *http.Request) {
@@ -18,6 +19,7 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user models.User
+	var profilePicture sql.NullString
 
 	err := database.DB.QueryRow(`
 		SELECT id, email, first_name, last_name, city, birthday,
@@ -31,7 +33,7 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.LastName,
 		&user.City,
 		&user.Birthday,
-		&user.ProfilePicture,
+		&profilePicture,
 		&user.Description,
 	)
 
@@ -39,10 +41,16 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 		if err == sql.ErrNoRows {
 			http.Error(w, "User not found", http.StatusNotFound)
 		} else {
-			log.Println("Database error:", err)
+			log.Printf("GET PROFILE DATABASE ERROR: %v", err)
 			http.Error(w, "Database error", http.StatusInternalServerError)
 		}
 		return
+	}
+
+	if profilePicture.Valid {
+		user.ProfilePicture = profilePicture.String
+	} else {
+		user.ProfilePicture = ""
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -59,20 +67,64 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 6<<20)
+
+	if err := r.ParseMultipartForm(6 << 20); err != nil {
+		http.Error(w, "Invalid multipart form", http.StatusBadRequest)
+		return
+	}
+
+	userJSON := r.FormValue("user")
+	if userJSON == "" {
+		http.Error(w, "Missing user data", http.StatusBadRequest)
+		return
+	}
+
 	var updates map[string]json.RawMessage
 
-	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+	if err := json.Unmarshal([]byte(userJSON), &updates); err != nil {
+		http.Error(w, "Invalid user data", http.StatusBadRequest)
 		return
+	}
+
+	var removeProfilePicture bool
+
+	if raw, exists := updates["removeProfilePicture"]; exists {
+		if err := json.Unmarshal(raw, &removeProfilePicture); err != nil {
+			http.Error(w, "Invalid removeProfilePicture value", http.StatusBadRequest)
+			return
+		}
+	}
+
+	var preferences *[]uint64
+	
+	if rawPreferences, exists := updates["preferences"]; exists {
+		var parsed []uint64
+		if err := json.Unmarshal(rawPreferences, &parsed); err != nil {
+			http.Error(w, "Invalid preferences", http.StatusBadRequest)
+			return
+		}
+		preferences = &parsed
+	}
+
+	newProfilePath, err := saveProfilePicture(r)
+	if err != nil {
+		http.Error(w, "Invalid profile picture: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if newProfilePath != "" {
+		updates["profilePicture"], _ = json.Marshal(newProfilePath)
+	} else if removeProfilePicture {
+		updates["profilePicture"], _ = json.Marshal(nil)
 	}
 
 	allowedFields := map[string]string{
 		"email":           "email",
-		"firstname":      "firstname",
-		"lastname":       "lastname",
+		"firstname":      "first_name",
+		"lastname":       "last_name",
 		"city":            "city",
 		"birthday":        "birthday",
-		"profilePicture": "profilePicture",
+		"profilePicture": "profile_picture",
 		"description":     "description",
 		"language":        "language",
 		"theme":           "theme",
@@ -97,18 +149,56 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		args = append(args, value)
 	}
 
-	if len(setClauses) == 0 {
+	hasPreferences := preferences != nil
+
+	if len(setClauses) == 0 && !hasPreferences{
+		if newProfilePath != "" {
+            os.Remove(newProfilePath)
+        }
 		http.Error(w, "No profile fields to update", http.StatusBadRequest)
 		return
 	}
 
-	query := "UPDATE users SET " + strings.Join(setClauses, ", ") + " WHERE id=?"
-	args = append(args, userID)
+	tx, err := database.DB.Begin()
+if err != nil {
+    log.Printf("Failed to begin profile update transaction: %v", err)
 
-	_, err := database.DB.Exec(query, args...)
-	if err != nil {
-		log.Println("Update error:", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
+    if newProfilePath != "" {
+        os.Remove(newProfilePath)
+    }
+
+    http.Error(w, "Database error", http.StatusInternalServerError)
+    return
+}
+	defer tx.Rollback()
+
+	if len(setClauses) > 0 {
+		query := "UPDATE users SET " + strings.Join(setClauses, ", ") + " WHERE id=?"
+		args = append(args, userID)
+		_, err = tx.Exec(query, args...)
+		if err != nil {
+			if newProfilePath != "" {
+                os.Remove(newProfilePath)
+            }
+			http.Error(w, "Failed to update profile", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if preferences != nil {
+		if err := updatePreferencesTx(tx, userID, *preferences); err != nil {
+			if newProfilePath != "" {
+                os.Remove(newProfilePath)
+            }
+			http.Error(w, "Failed to update preferences", http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		if newProfilePath != "" {
+			os.Remove(newProfilePath)
+		}
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
 		return
 	}
 
@@ -181,7 +271,6 @@ func GetPreferences(w http.ResponseWriter, r *http.Request) {
 	`, userID)
 
 	if err != nil {
-		log.Println("Failed to fetch preferences:", err)
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
@@ -193,7 +282,6 @@ func GetPreferences(w http.ResponseWriter, r *http.Request) {
 		var interest models.Interest
 
 		if err := rows.Scan(&interest.ID, &interest.Name); err != nil {
-			log.Println("Failed to scan preference:", err)
 			http.Error(w, "Database error", http.StatusInternalServerError)
 			return
 		}
@@ -202,7 +290,6 @@ func GetPreferences(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := rows.Err(); err != nil {
-		log.Println("Failed to read preferences:", err)
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
@@ -237,46 +324,21 @@ func UpdatePreferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	preferences := *request.Preferences
-
 	// Start transaction.
 	tx, err := database.DB.Begin()
 	if err != nil {
-		log.Println("Failed to start transaction:", err)
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback()
 
-	// Remove the user's existing preferences.
-	_, err = tx.Exec(
-		`DELETE FROM user_interests WHERE user_id = ?`,
-		userID,
-	)
-	if err != nil {
-		log.Println("Failed to delete preferences:", err)
-		http.Error(w, "Failed to update preferences", http.StatusInternalServerError)
+	if err := updatePreferencesTx(tx, userID, *request.Preferences); err != nil {
+		http.Error(w, "Failed to update preferences:", http.StatusInternalServerError)
 		return
-	}
-
-	// Insert the new preferences.
-	for _, interestID := range preferences {
-		_, err = tx.Exec(
-			`INSERT INTO user_interests (user_id, interest_id)
-			 VALUES (?, ?)`,
-			userID,
-			interestID,
-		)
-		if err != nil {
-			log.Println("Failed to insert preference:", err)
-			http.Error(w, "Failed to update preferences", http.StatusInternalServerError)
-			return
-		}
 	}
 
 	// Commit changes only when everything succeeds.
 	if err := tx.Commit(); err != nil {
-		log.Println("Failed to commit preferences:", err)
 		http.Error(w, "Failed to save preferences", http.StatusInternalServerError)
 		return
 	}
@@ -284,6 +346,25 @@ func UpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message":     "Preferences updated successfully",
-		"preferences": preferences,
+		"preferences": *request.Preferences,
 	})
+}
+
+func updatePreferencesTx(tx *sql.Tx, userID int, preferences []uint64) error {
+	_, err := tx.Exec(
+		`DELETE FROM user_interests WHERE user_id = ?`, userID,
+	)
+	if err != nil {
+		return err
+	}
+
+	for _, interestID := range preferences {
+		_, err := tx.Exec(
+			`INSERT INTO user_interests (user_id, interest_id) VALUES (?, ?)`, userID, interestID,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
