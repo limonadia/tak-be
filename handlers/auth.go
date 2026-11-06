@@ -1,24 +1,26 @@
 package handlers
 
 import (
+	"context"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"math/rand"
+	"net/http"
+	"net/smtp"
+	"os"
+	"path/filepath"
+	"strings"
 	"tak-be/database"
 	"tak-be/models"
-	"context"
-	"encoding/json"
-	"log"
-	"net/http"
-	"strings"
 	"time"
+
 	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
-	"io"
-	"fmt"
 	"github.com/google/uuid"
-	"path/filepath"
-	"os"
-	"encoding/hex"
-	"math/rand"
-	"net/smtp"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var jwtKey = []byte("password")
@@ -440,4 +442,202 @@ func DeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 type ForgotPasswordRequest struct {
 	Email string `json:"email"`
+}
+
+func VerifyPassword(w http.ResponseWriter, r *http.Request) {
+	userID, ok := GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	var passwordHash string
+
+	err := database.DB.QueryRow( "SELECT password_hash FROM users WHERE id = ?", userID,).Scan(&passwordHash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "User not found", http.StatusNotFound)
+			return
+		}
+
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password),); err != nil {
+		http.Error(w, "Incorrect password", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{
+		"valid": true,
+	})
+}
+
+func SendVerificationEmail(w http.ResponseWriter, r * http.Request){
+	userID, ok := GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Email string `json:"email"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid email", http.StatusBadRequest)
+		return
+	}
+
+	var exists int 
+	err := database.DB.QueryRow("SELECT COUNT(*) FROM users WHERE email=?", req.Email).Scan(&exists)
+	if err != nil {
+		http.Error(w, "Database  error", http.StatusInternalServerError)
+	}
+	if exists > 0 {
+		http.Error(w, "Email already exists", http.StatusInternalServerError)
+		return
+	} 
+
+	token := generateRandomToken(32)
+	tokenExpiry := time.Now().Add(15 * time.Minute)
+	_, err = database.DB.Exec("UPDATE users SET reset_token=?, reset_token_expiry=?, placeholder_email=? WHERE id=?", token, tokenExpiry, req.Email, userID)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	resetLink := "http://localhost:8100/reset-email?token=" + token
+	from := os.Getenv("SMTP_EMAIL")
+	password := os.Getenv("SMTP_PASS")
+	to := req.Email
+	subject := "Email Reset Request"
+	body := fmt.Sprintf("Your requested to reset your email. \n\n Click the lilnk below: \n%s\n\nThis link will expire in 1 hour.", resetLink)
+	message := []byte("Subject: " + subject + "\r\n" + 
+		"From: " + from + "\r\n" + 
+		"To: " + to + "\r\n\r\n" +
+		body)
+
+	smtpHost := "smtp.gmail.com"
+	smtpPort := "587"
+	auth := smtp.PlainAuth("", from, password, smtpHost)
+
+	if err := smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{to}, message); err != nil {
+		fmt.Println("Email error:", err)
+		http.Error(w, "Failed to send email", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Email reset link sent successfully"})
+}
+
+func ValidateToken (w http.ResponseWriter, r * http.Request) {
+	userID, ok := GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Token string `json:"token"`
+		Type string `json:"type"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	var userResetToken sql.NullString
+	var userResetTokenExpiry sql.NullTime
+	err := database.DB.QueryRow("SELECT reset_token, reset_token_expiry FROM users WHERE id=?", userID,).Scan(&userResetToken, &userResetTokenExpiry)
+	if err != nil {
+		http.Error(w, "Database error while selecting tokens", http.StatusInternalServerError)
+		return
+	}
+	
+	if !userResetToken.Valid || !userResetTokenExpiry.Valid {
+		http.Error(w, "No active reset token", http.StatusBadRequest)
+		return
+	}
+
+	if time.Now().After(userResetTokenExpiry.Time) {
+		http.Error(w, "Token expired", http.StatusBadRequest)
+		return
+	}
+
+	if userResetToken.String != req.Token {
+		http.Error(w, "Invalid token", http.StatusBadRequest)
+		return
+	}
+	
+	_, err = database.DB.Exec("UPDATE users SET reset_token=NULL, reset_token_expiry=NULL WHERE id=?", userID)
+	if err != nil {
+		http.Error(w, "Database error while setting token null", http.StatusInternalServerError)
+		return
+	}
+
+	if req.Type == "email"{
+		response := updateEmail(userID)
+		if response == false {
+			http.Error(w, "Unable to update email", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Password reset successful.",
+	})
+}
+
+func updateEmail(userID int) bool {
+
+	var newEmail string
+	err := database.DB.QueryRow("SELECT placeholder_email FROM users WHERE id=?", userID).Scan(&newEmail)
+	if err != nil{
+		if err == sql.ErrNoRows {
+			log.Println("No placeholder email was found",  http.StatusNotFound)
+			return false
+		}
+		log.Println("Database error", http.StatusInternalServerError)
+		return false
+	}
+
+	var exists int
+	err = database.DB.QueryRow("SELECT COUNT(*) FROM users WHERE email=?", newEmail).Scan(&exists)
+	if err != nil {
+		log.Println("Database error:", http.StatusInternalServerError)
+		return false
+	}
+	if exists > 0 {
+		log.Println("Email already exists", http.StatusBadRequest)
+		return false
+	}
+
+	_, err = database.DB.Exec("UPDATE users SET email=? WHERE id=?", newEmail, userID)
+	if err != nil {
+		log.Println("Unable to update email, database error", http.StatusInternalServerError)
+		return false
+	}
+
+	_, err = database.DB.Exec("UPDATE users SET placeholder_email=NULL WHERE id=?", userID)
+	if err != nil {
+		log.Println("Something went wrong. Database error", http.StatusInternalServerError)
+		return false
+	}
+
+	return true
 }

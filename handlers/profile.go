@@ -160,16 +160,16 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx, err := database.DB.Begin()
-if err != nil {
-    log.Printf("Failed to begin profile update transaction: %v", err)
+	if err != nil {
+		log.Printf("Failed to begin profile update transaction: %v", err)
 
-    if newProfilePath != "" {
-        os.Remove(newProfilePath)
-    }
+		if newProfilePath != "" {
+			os.Remove(newProfilePath)
+		}
 
-    http.Error(w, "Database error", http.StatusInternalServerError)
-    return
-}
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
 	defer tx.Rollback()
 
 	if len(setClauses) > 0 {
