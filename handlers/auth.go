@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -512,7 +513,10 @@ func SendVerificationEmail(w http.ResponseWriter, r * http.Request){
 
 	token := generateRandomToken(32)
 	tokenExpiry := time.Now().Add(15 * time.Minute)
-	_, err = database.DB.Exec("UPDATE users SET reset_token=?, reset_token_expiry=?, placeholder_email=? WHERE id=?", token, tokenExpiry, req.Email, userID)
+	tokenHash := sha256.Sum256([]byte(token))
+	hashedToken := hex.EncodeToString(tokenHash[:])
+
+	_, err = database.DB.Exec("UPDATE users SET reset_token=?, reset_token_expiry=?, placeholder_email=? WHERE id=?", hashedToken, tokenExpiry, req.Email, userID)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
@@ -578,7 +582,10 @@ func ValidateToken (w http.ResponseWriter, r * http.Request) {
 		return
 	}
 
-	if userResetToken.String != req.Token {
+	tokenHash := sha256.Sum256([]byte(req.Token))
+	hashedToken := hex.EncodeToString(tokenHash[:])
+
+	if userResetToken.String != hashedToken {
 		http.Error(w, "Invalid token", http.StatusBadRequest)
 		return
 	}
@@ -640,4 +647,37 @@ func updateEmail(userID int) bool {
 	}
 
 	return true
+}
+
+func UpdatePassword(w http.ResponseWriter, r * http.Request){
+	userID, ok := GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Error hashing password", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = database.DB.Exec("UPDATE users SET password_hash=? WHERE id=?", hashed, userID)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Password updated successfully.",
+	})
 }
