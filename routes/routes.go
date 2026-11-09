@@ -33,6 +33,7 @@ func RegisterRoutes(r *mux.Router) {
 
 	api.Handle("/verify-password", handlers.AuthMiddleWare(http.HandlerFunc(handlers.VerifyPassword))).Methods("POST")
 	api.Handle("/send-verification-email", handlers.AuthMiddleWare(http.HandlerFunc(handlers.SendVerificationEmail))).Methods("POST")
-	api.Handle("/validate-token", handlers.AuthMiddleWare(http.HandlerFunc(handlers.ValidateToken))).Methods("POST")
+	api.Handle("/validate-email-token", handlers.AuthMiddleWare(http.HandlerFunc(handlers.ValidateEmailToken))).Methods("POST")
+	api.Handle("/validate-password-token", handlers.AuthMiddleWare(http.HandlerFunc(handlers.ValidatePasswordToken))).Methods("POST")
 	api.Handle("/password", handlers.AuthMiddleWare(http.HandlerFunc(handlers.UpdatePassword))).Methods("PUT")
 }

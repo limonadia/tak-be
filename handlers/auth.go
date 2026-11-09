@@ -14,6 +14,7 @@ import (
 	"net/smtp"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"tak-be/database"
 	"tak-be/models"
@@ -486,48 +487,71 @@ func VerifyPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func SendVerificationEmail(w http.ResponseWriter, r * http.Request){
-	userID, ok := GetUserID(r.Context())
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
 
 	var req struct {
 		Email string `json:"email"`
+		Type string `json:"type"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid email", http.StatusBadRequest)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
-	var exists int 
-	err := database.DB.QueryRow("SELECT COUNT(*) FROM users WHERE email=?", req.Email).Scan(&exists)
-	if err != nil {
-		http.Error(w, "Database  error", http.StatusInternalServerError)
+	var userID int
+	var ok bool
+	if req.Type == "email" {
+		userID, ok = GetUserID(r.Context())
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var exists int 
+		err := database.DB.QueryRow("SELECT COUNT(*) FROM users WHERE email=?", req.Email).Scan(&exists)
+		if err != nil {
+			http.Error(w, "Database  error", http.StatusInternalServerError)
+		}
+		if exists > 0 {
+			http.Error(w, "Email already exists", http.StatusInternalServerError)
+			return
+		} 
+	} else {
+		_ = database.DB.QueryRow("SELECT id FROM users WHERE email=?", req.Email).Scan(&userID)
 	}
-	if exists > 0 {
-		http.Error(w, "Email already exists", http.StatusInternalServerError)
-		return
-	} 
 
 	token := generateRandomToken(32)
 	tokenExpiry := time.Now().Add(15 * time.Minute)
 	tokenHash := sha256.Sum256([]byte(token))
 	hashedToken := hex.EncodeToString(tokenHash[:])
 
-	_, err = database.DB.Exec("UPDATE users SET reset_token=?, reset_token_expiry=?, placeholder_email=? WHERE id=?", hashedToken, tokenExpiry, req.Email, userID)
+	if (req.Type == "email"){
+		_, err := database.DB.Exec("UPDATE users SET placeholder_email=? WHERE id=?", req.Email, userID)
+		if err != nil {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	_, err := database.DB.Exec("UPDATE users SET reset_token=?, reset_token_expiry=? WHERE id=?", hashedToken, tokenExpiry, userID)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 
-	resetLink := "http://localhost:8100/reset-email?token=" + token
+	resetLink := "http://localhost:8100/reset-" + req.Type + "?token=" + token + "&userId=" + strconv.Itoa(userID)
 	from := os.Getenv("SMTP_EMAIL")
 	password := os.Getenv("SMTP_PASS")
 	to := req.Email
-	subject := "Email Reset Request"
-	body := fmt.Sprintf("Your requested to reset your email. \n\n Click the lilnk below: \n%s\n\nThis link will expire in 1 hour.", resetLink)
+
+	var subject, body string
+	if req.Type == "email"{
+		subject = "Email Reset Request"
+		body = fmt.Sprintf("Your requested to reset your email. \n\n Click the lilnk below: \n%s\n\nThis link will expire in 1 hour.", resetLink)
+	} else {
+		subject = "Password Reset Request"
+		body = fmt.Sprintf("Your requested to reset your password. \n\n Click the lilnk below: \n%s\n\nThis link will expire in 1 hour.", resetLink)
+	}
 	message := []byte("Subject: " + subject + "\r\n" + 
 		"From: " + from + "\r\n" + 
 		"To: " + to + "\r\n\r\n" +
@@ -544,10 +568,10 @@ func SendVerificationEmail(w http.ResponseWriter, r * http.Request){
 	}
 
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Email reset link sent successfully"})
+	json.NewEncoder(w).Encode(map[string]string{"message": "Reset link sent successfully"})
 }
 
-func ValidateToken (w http.ResponseWriter, r * http.Request) {
+func ValidateEmailToken (w http.ResponseWriter, r * http.Request) {
 	userID, ok := GetUserID(r.Context())
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -556,7 +580,6 @@ func ValidateToken (w http.ResponseWriter, r * http.Request) {
 
 	var req struct {
 		Token string `json:"token"`
-		Type string `json:"type"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -596,12 +619,10 @@ func ValidateToken (w http.ResponseWriter, r * http.Request) {
 		return
 	}
 
-	if req.Type == "email"{
-		response := updateEmail(userID)
-		if response == false {
-			http.Error(w, "Unable to update email", http.StatusInternalServerError)
-			return
-		}
+	response := updateEmail(userID)
+	if response == false {
+		http.Error(w, "Unable to update email", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -650,19 +671,39 @@ func updateEmail(userID int) bool {
 }
 
 func UpdatePassword(w http.ResponseWriter, r * http.Request){
-	userID, ok := GetUserID(r.Context())
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	var req struct {
 		Password string `json:"password"`
+		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
+
+	var userID int
+	var ok bool
+	tokenHash := sha256.Sum256([]byte(req.Token))
+	hashedToken := hex.EncodeToString(tokenHash[:])
+	if req.Token != "" {
+		err := database.DB.QueryRow(`SELECT id FROM users WHERE reset_token = ?`, hashedToken).Scan(&userID)
+
+    	if err != nil {
+			if err == sql.ErrNoRows {
+				http.Error(w, "Invalid or expired token", http.StatusBadRequest)
+				return
+			}
+
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		userID, ok = GetUserID(r.Context())
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+	
 
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -676,8 +717,49 @@ func UpdatePassword(w http.ResponseWriter, r * http.Request){
 		return
 	}
 
+	if req.Token != "" {
+		_, err = database.DB.Exec("UPDATE users SET reset_token=NULL, reset_token_expiry=NULL WHERE id=?", userID,)
+
+		if err != nil {
+			http.Error(w, "Database error while clearing reset token", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Password updated successfully.",
+	})
+}
+
+func ValidatePasswordToken(w http.ResponseWriter, r * http.Request){
+	var req struct {
+		Token string `json:"token"`
+		UserId int `json:"userId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	var userID int
+	var userResetTokenExpiry sql.NullTime
+	tokenHash := sha256.Sum256([]byte(req.Token))
+	hashedToken := hex.EncodeToString(tokenHash[:])
+
+	err := database.DB.QueryRow("SELECT id, reset_token_expiry FROM users WHERE reset_token=? AND id=?", hashedToken, req.UserId).Scan(&userID, &userResetTokenExpiry)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	if time.Now().After(userResetTokenExpiry.Time) {
+		http.Error(w, "Token expired", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Token is valid.",
 	})
 }
