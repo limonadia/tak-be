@@ -6,26 +6,51 @@ import (
 
 type Event struct {
 	ID int `json:"id"`
-	CreatorId int `json:"creator_id"`
-	CategoryId int `json:"category_id"`
+	CreatorId int `json:"creatorId"`
+	Labels []uint64 `json:"labels"`
 	Title string `json:"title"`
 	Description string `json:"description"`
-	ImageUrl string `json:"image_url"`
-	LocationName string `json:"location_name"`
+	ImageUrl string `json:"image"`
+	LocationName string `json:"location"`
 	City string `json:"city"`
+	PlaceId string `json:"placeId"`
 	Address string `json:"address"`
 	Latitude string `json:"latitude"`
 	Longitude string `json:"longitude"`
-	StartsAt time.Time `json:"starts_at"`
-	EndsAt time.Time `json:"ends_at"`
-	RegistrationDeadline time.Time `json:"registration_deadline"`
-	MinParticipants int `json:"min_participants"`
-	MaxParticipants int `json:"max_participants"`
-	PriceAmount float64 `json:"price_amount"`
+	StartsAt time.Time `json:"timeFrom"`
+	EndsAt time.Time `json:"timeTo"`
+	Date time.Time `json:"date"`
+	RegistrationDeadline time.Time `json:"registrationDeadline"`
+	MinParticipants int `json:"minPeople"`
+	MaxParticipants int `json:"maxPeople"`
+	PriceAmount float64 `json:"fee"`
 	Currency string `json:"currency"`
 	Status EventStatus `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	RelatedGroups []int `json:"relatedGroups"`
+}
+
+type CreateEventRequest struct {
+    Title                string   `json:"title"`
+    Description          string   `json:"description"`
+    Date                 string   `json:"date"`
+    TimeFrom             string   `json:"timeFrom"`
+    TimeTo               string   `json:"timeTo"`
+    LocationName         string   `json:"location"`
+    City                 string   `json:"city"`
+    PlaceId              string   `json:"placeId"`
+    Address              string   `json:"address"`
+    Latitude             float64  `json:"latitude"`
+    Longitude            float64  `json:"longitude"`
+	CategoryID           uint64   `json:"categoryId"`
+    MinParticipants      int      `json:"minPeople"`
+    MaxParticipants      int      `json:"maxPeople"`
+    RegistrationDeadline string   `json:"registrationDeadline"`
+    PriceAmount          float64  `json:"fee"`
+    Currency             string   `json:"currency"`
+    Labels               []uint64 `json:"labels"`
+    RelatedGroups        []int    `json:"relatedGroups"`
 }
 
 type EventStatus string

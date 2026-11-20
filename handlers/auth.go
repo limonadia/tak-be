@@ -75,7 +75,7 @@ func Signup(w http.ResponseWriter, r *http.Request){
 		return
 	}
 
-	profilePath, err := saveProfilePicture(r)
+	profilePath, err := saveImage(r, "profilePicture", "profiles")
 	if err != nil {
 		http.Error(w, "Invalid profile picture", http.StatusBadRequest)
 		return
@@ -134,11 +134,11 @@ func Signup(w http.ResponseWriter, r *http.Request){
 	json.NewEncoder(w).Encode(user)
 }
 
-func saveProfilePicture(r *http.Request) (string, error) {
-    file, header, err := r.FormFile("profilePicture")
+func saveImage(r *http.Request, fieldName string, folder string) (string, error) {
+    file, header, err := r.FormFile(fieldName)
     if err != nil {
         if err == http.ErrMissingFile {
-            return "", nil 
+            return "", nil
         }
         return "", err
     }
@@ -168,8 +168,9 @@ func saveProfilePicture(r *http.Request) (string, error) {
     }
 
     filename := uuid.NewString() + ext
-    relativePath := filepath.ToSlash(filepath.Join("uploads", "profiles", filename))
-    fullPath := filepath.Join("uploads", "profiles", filename)
+
+    relativePath := filepath.ToSlash(filepath.Join("uploads", folder, filename))
+    fullPath := filepath.Join("uploads", folder, filename)
 
     if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
         return "", err
@@ -193,6 +194,7 @@ func saveProfilePicture(r *http.Request) (string, error) {
         os.Remove(fullPath)
         return "", copyErr
     }
+
     if closeErr != nil {
         os.Remove(fullPath)
         return "", closeErr

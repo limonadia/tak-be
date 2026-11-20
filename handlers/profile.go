@@ -107,7 +107,7 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		preferences = &parsed
 	}
 
-	newProfilePath, err := saveProfilePicture(r)
+	newProfilePath, err := saveImage(r, "profilePicture", "profiles")
 	if err != nil {
 		http.Error(w, "Invalid profile picture: "+err.Error(), http.StatusBadRequest)
 		return
